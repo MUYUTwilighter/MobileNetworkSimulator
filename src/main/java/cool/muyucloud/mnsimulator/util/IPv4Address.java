@@ -137,6 +137,21 @@ public class IPv4Address implements Address {
         return true;
     }
 
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        IPv4Address address1 = (IPv4Address) o;
+        return Arrays.equals(address, address1.address) && Arrays.equals(cover, address1.cover);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = Arrays.hashCode(address);
+        result = 31 * result + Arrays.hashCode(cover);
+        return result;
+    }
+
     public void changeCover(int coverLen) {
         for (int i = 0; i < coverLen; ++i) {
             this.cover[i / 8] |= (0b0_10000000 >>> (i % 8));
@@ -151,10 +166,10 @@ public class IPv4Address implements Address {
                 return len;
             }
             for (int i = 0; i < 8; ++i) {
-                if (b % 2 == 1) {
+                if (bInt % 2 == 1) {
                     ++len;
                 }
-                b >>>= 1;
+                bInt >>>= 1;
             }
         }
         return len;

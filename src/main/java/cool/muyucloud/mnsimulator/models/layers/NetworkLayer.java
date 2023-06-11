@@ -2,15 +2,14 @@ package cool.muyucloud.mnsimulator.models.layers;
 
 import cool.muyucloud.mnsimulator.data.Data;
 import cool.muyucloud.mnsimulator.data.Packet;
-import cool.muyucloud.mnsimulator.data.RouteControlPacket;
 import cool.muyucloud.mnsimulator.models.Station;
+import cool.muyucloud.mnsimulator.models.protocols.Behave;
+import cool.muyucloud.mnsimulator.models.protocols.NetworkLayerProtocol;
 import cool.muyucloud.mnsimulator.util.IPv4Address;
 import cool.muyucloud.mnsimulator.util.MACAddress;
-import org.jetbrains.annotations.NotNull;
 
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedList;
 
 public class NetworkLayer implements Layer {
@@ -20,21 +19,42 @@ public class NetworkLayer implements Layer {
     private final Station station;
     private final IPv4Address address;
     private final HashMap<IPv4Address, Route> routeTable = new HashMap<>();
+    private final HashMap<Class<? extends Packet>, NetworkLayerProtocol> protocols = new HashMap<>();
 
     private final LinkedList<Packet> received = new LinkedList<>();
     private final LinkedList<Packet> toSend = new LinkedList<>();
     private final HashMap<IPv4Address, HashSet<Integer>> history = new HashMap<>();
+    private final HashSet<Behave> onSendTick = new HashSet<>();
 
     private int syn = 0;
 
     public NetworkLayer(Station station, IPv4Address address) {
         this.station = station;
         this.address = address;
-        RouteControlPacket hello = new RouteControlPacket(this.address, IPv4Address.BROADCAST, RouteControlPacket.TYPE_ROUTE_REQ, this.syn);
-        ++this.syn;
-        this.toSend.offer(hello);
+        // Add default route
         Route def = new Route(IPv4Address.BROADCAST, 0, Route.DEFAULT, 0x11111111);
         this.routeTable.put(IPv4Address.NULL, def);
+    }
+
+    public void regProtocol(NetworkLayerProtocol... protocols) {
+        // Initialize additional protocols
+        for (NetworkLayerProtocol protocol : protocols) {
+            Class<? extends Packet> dataType = protocol.processable();
+            NetworkLayerProtocol p = this.protocols.get(dataType);
+            if (p != null) {
+                throw new IllegalArgumentException(
+                    "Corresponding %s processable protocol %s exists".formatted(dataType, p.getClass()));
+            }
+            this.protocols.put(dataType, protocol);
+        }
+    }
+
+    public void regOnSendTick(Behave behave) {
+        this.onSendTick.add(behave);
+    }
+
+    public void regOnStart(Behave behave) {
+        behave.run();
     }
 
     @Override
@@ -49,8 +69,8 @@ public class NetworkLayer implements Layer {
             if (synSet.contains(packet.syn())) {
                 return;
             }
-            synSet.add(packet.syn());
-            this.received.offer(packet);
+            synSet.add(packet.syn());   // Record received
+            this.received.offer(packet);    // Push to queue
             if (RECORD) {
                 this.station.media().log(station, packet, "RECEIVE");
             }
@@ -75,7 +95,19 @@ public class NetworkLayer implements Layer {
         this.toSend.offer(packet);
     }
 
+    public void offer(Packet packet) {
+        this.toSend.offer(packet);
+    }
+
+    public int nextSyn() {
+        ++this.syn;
+        return this.syn - 1;
+    }
+
     public void sendTick() {
+        for (Behave behave : onSendTick) {
+            behave.run();
+        }
         Packet packet;
         while (!this.toSend.isEmpty()) {
             packet = this.toSend.poll();
@@ -87,92 +119,17 @@ public class NetworkLayer implements Layer {
         Packet packet;
         while (!this.received.isEmpty()) {
             packet = this.received.poll();
-            if (packet instanceof RouteControlPacket rcPacket) {
-                this.dealRCPacket(rcPacket);
-            } else {
-                this.dealDataPacket(packet);
+            NetworkLayerProtocol protocol = this.protocols.get(packet.getClass());
+            if (protocol == null) {
+                continue;
             }
+            protocol.process(packet);
         }
     }
 
-    private void dealRCPacket(@NotNull RouteControlPacket packet) {
-        int tick = this.station.media().getTick();
-        switch (packet.type()) {
-            case RouteControlPacket.TYPE_ROUTE_REQ -> {
-                packet = packet.getForward(this.address);
-                analyzeRREQ(packet, tick);
-                // if req is for us, send RouteRep
-                if (this.addressMatch(packet.target())) {
-                    this.toSend.offer(packet.getRRep(this.address, this.syn));
-                    ++this.syn;
-                    if (packet.isBroadcast()) {
-                        this.toSend.offer(packet);
-                    }
-                } else {    // if not, forward
-                    this.toSend.offer(packet);
-                }
-            }
-            case RouteControlPacket.TYPE_ROUTE_REP -> {
-                if (packet.path.contains(this.address)) {
-                    analyzeRREP(packet, tick);
-                }
-                if (IPv4Address.equals(this.address, packet.target())) {
-                    return;
-                }
-                this.toSend.offer(packet);
-            }
-        }
-    }
-
-    private void analyzeRREP(@NotNull RouteControlPacket packet, int tick) {
-        int hops = 0;
-        IPv4Address next;
-        Route route;
-        Iterator<IPv4Address> ips = packet.path.iterator();
-        // Goto ip of own
-        while (ips.hasNext()) {
-            IPv4Address ip = ips.next();
-            if (IPv4Address.equals(ip, this.address)) {
-                break;
-            }
-        }
-        // if not further route, exit
-        if (!ips.hasNext()) {
-            return;
-        }
-        // Update direct route
-        ++hops;
-        next = ips.next();
-        route = new Route(next, hops, Route.DIRECT, tick);
-        this.updateRoute(next, route);
-        // Update DSR route
-        while (ips.hasNext()) {
-            ++hops;
-            IPv4Address ip = ips.next();
-            route = new Route(next, hops, Route.DSR, tick);
-            this.updateRoute(ip, route);
-        }
-    }
-
-    private void analyzeRREQ(@NotNull RouteControlPacket packet, int tick) {
-        int hops = packet.hops();
-        IPv4Address next = packet.getBackward(this.address);
-        // analyze route from RReq
-        for (IPv4Address ip : packet.path) {
-            if (IPv4Address.equals(ip, next)) {
-                break;
-            }
-            Route route = new Route(next, hops, Route.DSR, tick);
-            this.updateRoute(ip, route);
-            --hops;
-        }
-        Route route = new Route(next, 1, Route.DIRECT, tick);
-        this.updateRoute(next, route);
-    }
-
-    private void updateRoute(IPv4Address target, Route route) {
+    public void updateRoute(IPv4Address target, Route route) {
         // if first route
-        if (!routeTable.containsKey(target)) {
+        if (!routeTable.containsKey(target) || IPv4Address.equals(target, IPv4Address.NULL)) {
             this.routeTable.put(target, route);
             return;
         }
@@ -189,38 +146,14 @@ public class NetworkLayer implements Layer {
         }
     }
 
-    private void dealDataPacket(@NotNull Packet packet) {
-        if (IPv4Address.equals(this.address, packet.target())) {
-            this.station.receive(packet.data());
-        } else {
-            this.send(packet);
-        }
-    }
-
     private MACAddress findNext(IPv4Address target) {
         MACAddress next;
         if (this.routeTable.containsKey(target)) {
             next = this.station.media().arp(this.routeTable.get(target).next());
         } else {
-            this.sendRReq(target);
             next = MACAddress.BROADCAST;
         }
         return next;
-    }
-
-    private void sendRReq(IPv4Address target) {
-        if (IPv4Address.equals(target, IPv4Address.BROADCAST)) {
-            throw new IllegalArgumentException();
-        }
-        RouteControlPacket packet = new RouteControlPacket(
-            this.address, target, RouteControlPacket.TYPE_ROUTE_REQ, this.syn);
-        ++this.syn;
-        this.toSend.offer(packet);
-    }
-
-    private boolean addressMatch(IPv4Address address) {
-        return IPv4Address.equals(address, this.address)
-            || IPv4Address.equals(address, IPv4Address.BROADCAST);
     }
 
     public IPv4Address ip() {
@@ -275,5 +208,9 @@ public class NetworkLayer implements Layer {
 
     public HashMap<IPv4Address, Route> routeTable() {
         return this.routeTable;
+    }
+
+    public Station station() {
+        return this.station;
     }
 }

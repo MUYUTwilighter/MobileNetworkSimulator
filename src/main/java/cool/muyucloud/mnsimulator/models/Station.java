@@ -5,10 +5,17 @@ import cool.muyucloud.mnsimulator.data.PlainData;
 import cool.muyucloud.mnsimulator.models.layers.DataLayer;
 import cool.muyucloud.mnsimulator.models.layers.NetworkLayer;
 import cool.muyucloud.mnsimulator.models.layers.PhysicalLayer;
+import cool.muyucloud.mnsimulator.models.protocols.NetworkLayerProtocol;
 import cool.muyucloud.mnsimulator.util.IPv4Address;
 import cool.muyucloud.mnsimulator.util.Pos;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.util.HashSet;
+
 public class Station {
+    public static HashSet<Class<? extends NetworkLayerProtocol>> PROTOCOLS = new HashSet<>();
+
     private final String name;
     private final Media media;
     private final int power;
@@ -23,6 +30,20 @@ public class Station {
         this.power = power;
         this.pos = pos;
         this.networkLayer = new NetworkLayer(this, ip);
+        this.initProtocols();
+    }
+
+    private void initProtocols() {
+        for (Class<? extends NetworkLayerProtocol> protocolC : PROTOCOLS) {
+            try {
+                Constructor<? extends NetworkLayerProtocol> cons = protocolC.getConstructor(NetworkLayer.class);
+                NetworkLayerProtocol protocol = cons.newInstance(networkLayer);
+                networkLayer.regProtocol(protocol);
+            } catch (NoSuchMethodException | InstantiationException | IllegalAccessException |
+                     InvocationTargetException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     public void sendTick() {
@@ -71,7 +92,8 @@ public class Station {
 
     @Override
     public String toString() {
-        return "%s, %d, %d, %s, %s".formatted(this.name, this.pos.x(), this.pos.y(), this.networkLayer.ip(), this.dataLayer.mac());
+        return "%s, %d, %d, %s, %s".formatted(
+            this.name, this.pos.x(), this.pos.y(), this.networkLayer.ip(), this.dataLayer.mac());
     }
 
     public void send(int size, IPv4Address target) {

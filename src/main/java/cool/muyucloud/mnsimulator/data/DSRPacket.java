@@ -5,13 +5,13 @@ import cool.muyucloud.mnsimulator.util.IPv4Address;
 import java.util.Iterator;
 import java.util.LinkedList;
 
-public class RouteControlPacket extends Packet {
+public class DSRPacket extends Packet {
     public static final byte TYPE_ROUTE_REQ = 0x03;
     public static final byte TYPE_ROUTE_REP = 0x04;
 
     public final LinkedList<IPv4Address> path = new LinkedList<>();
 
-    public RouteControlPacket(IPv4Address sender, IPv4Address target, byte type, int syn) {
+    public DSRPacket(IPv4Address sender, IPv4Address target, byte type, int syn) {
         super(new PlainData(), sender, target, type, syn);
         if (type == TYPE_ROUTE_REQ) {
             this.path.offer(sender);
@@ -19,7 +19,7 @@ public class RouteControlPacket extends Packet {
     }
 
     // get a forward packet
-    private RouteControlPacket(RouteControlPacket former, IPv4Address self) {
+    private DSRPacket(DSRPacket former, IPv4Address self) {
         super(former.data(), former.sender(), former.target(), TYPE_ROUTE_REQ, former.syn());
         for (IPv4Address address : former.path) {
             if (IPv4Address.equals(self, address)) {
@@ -30,11 +30,11 @@ public class RouteControlPacket extends Packet {
         this.path.offer(self);
     }
 
-    public RouteControlPacket getForward(IPv4Address self) {
+    public DSRPacket getForward(IPv4Address self) {
         if (this.type() != TYPE_ROUTE_REQ) {
             throw new IllegalStateException("Only route-request packet requires forward");
         }
-        return new RouteControlPacket(this, self);
+        return new DSRPacket(this, self);
     }
 
     public IPv4Address getBackward(IPv4Address self) {
@@ -52,8 +52,8 @@ public class RouteControlPacket extends Packet {
         return this.path.size() - 1;
     }
 
-    public RouteControlPacket getRRep(IPv4Address sender, int syn) {
-        RouteControlPacket packet = new RouteControlPacket(sender, this.sender(), TYPE_ROUTE_REP, syn);
+    public DSRPacket getRRep(IPv4Address sender, int syn) {
+        DSRPacket packet = new DSRPacket(sender, this.sender(), TYPE_ROUTE_REP, syn);
         for (IPv4Address ip : this.path) {
             packet.path.offer(ip);
         }
